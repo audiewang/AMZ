@@ -2,58 +2,68 @@ import streamlit as st
 import time
 import random
 import pandas as pd
-import requests
-from bs4 import BeautifulSoup
+from playwright.sync_api import sync_playwright
+
+# Initialize Playwright
+with sync_playwright() as p:
+    browser = p.chromium.launch()
+    browser.close()
+
+def delay():
+    time.sleep(random.randint(3, 10))
+
+def extract_product_info(page):
+    try:
+        page.wait_for_selector("#gridItemRoot", timeout=20000)
+        
+        grid_items = page.query_selector_all("#gridItemRoot")
+        
+        products = []
+        for item in grid_items:
+            product = {}
+            
+            # Extract ranking
+            rank_element = item.query_selector(".zg-bdg-text")
+            product['ranking'] = rank_element.inner_text().strip('#') if rank_element else 'N/A'
+            
+            # Extract product URL and name
+            link_element = item.query_selector("a.a-link-normal[href*='/dp/']")
+            product['url'] = link_element.get_attribute('href') if link_element else 'N/A'
+            name_element = item.query_selector("div._cDEzb_p13n-sc-css-line-clamp-3_g3dy1")
+            product['name'] = name_element.inner_text().strip() if name_element else 'N/A'
+            
+            # Extract rating
+            rating_element = item.query_selector("div.a-icon-row a.a-link-normal")
+            product['rating'] = rating_element.get_attribute('title').split()[0] if rating_element else 'N/A'
+            
+            # Extract number of reviews
+            reviews_element = item.query_selector("span.a-size-small")
+            product['reviews'] = reviews_element.inner_text().replace(',', '') if reviews_element else '0'
+            
+            # Extract price
+            price_element = item.query_selector("span._cDEzb_p13n-sc-price_3mJ9Z")
+            product['price'] = price_element.inner_text().strip('$') if price_element else 'N/A'
+            
+            products.append(product)
+        
+        return products
+    except Exception as e:
+        st.error(f"Error extracting product info: {str(e)}")
+        return []
 
 def scrape_amazon(url):
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-    }
     try:
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.content, 'html.parser')
-        products = extract_product_info(soup)
-        return products
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page()
+            page.goto(url)
+            time.sleep(5)  # Wait for 5 seconds after page load
+            products = extract_product_info(page)
+            browser.close()
+            return products
     except Exception as e:
         st.error(f"Error during scraping: {str(e)}")
         return None
-
-def extract_product_info(soup):
-    products = []
-    grid_items = soup.find_all('div', {'id': 'gridItemRoot'})
-    
-    for item in grid_items:
-        product = {}
-        
-        # Extract ranking
-        rank_element = item.find('span', class_='zg-bdg-text')
-        product['ranking'] = rank_element.text.strip('#') if rank_element else 'N/A'
-        
-        # Extract product URL and name
-        link_element = item.find('a', class_='a-link-normal', href=lambda x: x and '/dp/' in x)
-        if link_element:
-            product['url'] = 'https://www.amazon.com' + link_element['href']
-            name_element = link_element.find('div', class_='_cDEzb_p13n-sc-css-line-clamp-3_g3dy1')
-            product['name'] = name_element.text.strip() if name_element else 'N/A'
-        else:
-            product['url'] = 'N/A'
-            product['name'] = 'N/A'
-        
-        # Extract rating
-        rating_element = item.find('a', class_='a-link-normal', title=lambda x: x and 'out of 5 stars' in x)
-        product['rating'] = rating_element['title'].split()[0] if rating_element else 'N/A'
-        
-        # Extract number of reviews
-        reviews_element = item.find('span', class_='a-size-small')
-        product['reviews'] = reviews_element.text.replace(',', '') if reviews_element else '0'
-        
-        # Extract price
-        price_element = item.find('span', class_='_cDEzb_p13n-sc-price_3mJ9Z')
-        product['price'] = price_element.text.strip('$') if price_element else 'N/A'
-        
-        products.append(product)
-    
-    return products
 
 st.title('Amazon Best Sellers Scraper')
 
@@ -62,6 +72,9 @@ url = st.text_input('Enter the Amazon Best Sellers URL:')
 if st.button('Scrape Data'):
     if url:
         try:
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            
             products = scrape_amazon(url)
             
             if products:
